@@ -755,33 +755,77 @@ static void on_decode_pad_added(GstElement * element, GstPad * pad, gpointer use
     if(g_str_has_prefix(name, "video/")) {
         if(!streamer->video_convert) {
             GstElement * video_app_sink;
-            GstElement * video_rate;
             GstElement * video_queue;
-            const lv_gstreamer_pipeline_element_t elements[] = {
-                {"videoconvert",  "lv_gstreamer_video_convert",  &streamer->video_convert},
-                {"videorate",     "lv_gstreamer_video_rate",     &video_rate},
-                {"queue",         "lv_gstreamer_video_queue",    &video_queue},
-                {"appsink",       "lv_gstreamer_video_sink",     &video_app_sink},
+            GstElement * video_scale = NULL;
+
+            /* Read the widget size so we can ask the pipeline to scale the frame to it.
+             * The class default is LV_SIZE_CONTENT, so before the first frame the size is
+             * often 0. In that case we don't constrain width/height and the widget sizes
+             * itself to the incoming frame instead.*/
+            lv_obj_t * widget = (lv_obj_t *)streamer;
+            lv_obj_update_layout(widget);
+            const int32_t widget_w = lv_obj_get_width(widget);
+            const int32_t widget_h = lv_obj_get_height(widget);
+            const bool has_target_size = (widget_w > 0) && (widget_h > 0);
+
+            /* On the i.MX8MP, imxvideoconvert_g2d does both the color conversion and the
+             * scaling in a single G2D blit. Fall back to the software videoconvert (plus a
+             * videoscale when a target size is set) on platforms without the G2D plugin.*/
+            GstElementFactory * g2d_factory = gst_element_factory_find("imxvideoconvert_g2d");
+            const bool use_g2d = (g2d_factory != NULL);
+            const char * convert_factory = use_g2d ? "imxvideoconvert_g2d" : "videoconvert";
+            if(g2d_factory) {
+                gst_object_unref(g2d_factory);
+            }
+            /* videoscale is only needed for the software fallback: imxvideoconvert_g2d
+             * already scales, and without a target size there is nothing to scale to.*/
+            const bool use_scale = !use_g2d && has_target_size;
+
+            lv_gstreamer_pipeline_element_t elements[4];
+            size_t element_count = 0;
+            elements[element_count++] = (lv_gstreamer_pipeline_element_t) {
+                convert_factory, "lv_gstreamer_video_convert", &streamer->video_convert
             };
-            const size_t element_count = sizeof(elements) / sizeof(elements[0]);
+            if(use_scale) {
+                elements[element_count++] = (lv_gstreamer_pipeline_element_t) {
+                    "videoscale", "lv_gstreamer_video_scale", &video_scale
+                };
+            }
+            elements[element_count++] = (lv_gstreamer_pipeline_element_t) {
+                "queue", "lv_gstreamer_video_queue", &video_queue
+            };
+            elements[element_count++] = (lv_gstreamer_pipeline_element_t) {
+                "appsink", "lv_gstreamer_video_sink", &video_app_sink
+            };
             if(gstreamer_make_and_add_to_pipeline(streamer, elements, element_count) != LV_RESULT_OK) {
                 goto exit;
             }
 
-            /* Here we set the fps we want the pipeline to produce and the color format
-             * This is achieved by the video_convert and video_rate elements that will automatically throttle and
-             * convert the image to the format we desire*/
-            uint32_t target_fps = 1000 / LV_DEF_REFR_PERIOD;
-            char caps_str[128];
-            lv_snprintf(caps_str, sizeof(caps_str), "video/x-raw,format=%s,framerate=%" LV_PRIu32 "/1",
-                        gstreamer_get_gst_format(streamer->color_format), target_fps);
+            /* Set the color format the appsink should deliver and, when we know the widget
+             * size, the resolution to scale to. No framerate is imposed: WebRTC frames
+             * don't arrive on a clean grid and max-buffers=1 + drop already keep only the
+             * newest frame.*/
+            char caps_str[160];
+            if(has_target_size) {
+                lv_snprintf(caps_str, sizeof(caps_str),
+                            "video/x-raw,format=%s,width=%" LV_PRId32 ",height=%" LV_PRId32,
+                            gstreamer_get_gst_format(streamer->color_format), widget_w, widget_h);
+            }
+            else {
+                lv_snprintf(caps_str, sizeof(caps_str), "video/x-raw,format=%s",
+                            gstreamer_get_gst_format(streamer->color_format));
+            }
 
             GstCaps * appsink_caps = gst_caps_from_string(caps_str);
             g_object_set(G_OBJECT(video_app_sink), "emit-signals", TRUE, "sync", TRUE, "max-buffers", 1, "drop", TRUE, "caps",
                          appsink_caps, NULL);
             gst_caps_unref(appsink_caps);
 
-            if(!gst_element_link_many(streamer->video_convert, video_rate, video_queue, video_app_sink, NULL)) {
+            const bool linked = use_scale
+                                ? gst_element_link_many(streamer->video_convert, video_scale, video_queue, video_app_sink,
+                                                        NULL)
+                                : gst_element_link_many(streamer->video_convert, video_queue, video_app_sink, NULL);
+            if(!linked) {
                 LV_LOG_ERROR("Failed to link video convert to sink");
                 goto exit;
             }
