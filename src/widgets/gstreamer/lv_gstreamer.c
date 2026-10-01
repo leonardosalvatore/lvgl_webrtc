@@ -535,6 +535,17 @@ static bool gstreamer_store_frame(lv_gstreamer_t * streamer, GstSample * sample,
     const uint32_t h = GST_VIDEO_INFO_HEIGHT(&streamer->video_info);
     const uint32_t src_stride = GST_VIDEO_INFO_PLANE_STRIDE(&streamer->video_info, 0);
 
+    /* TODO: temporary diagnostic to confirm i.MX G2D stride padding as the cause of the
+     * pixel-row shearing. If the buffer's GstVideoMeta stride is larger than the caps stride
+     * used above, the real fix is to honor the meta stride/offset here. Remove once confirmed.*/
+    GstVideoMeta * vmeta = gst_buffer_get_video_meta(buffer);
+    LV_LOG_USER("gstreamer stride: caps=%" LV_PRIu32 " meta=%d lvgl=%" LV_PRIu32 " w=%" LV_PRIu32 " h=%" LV_PRIu32 " off=%d",
+                src_stride,
+                vmeta ? (int)vmeta->stride[0] : -1,
+                (uint32_t)lv_draw_buf_width_to_stride(w, streamer->color_format),
+                w, h,
+                vmeta ? (int)vmeta->offset[0] : -1);
+
     const bool aligned = (lv_uintptr_t)map->data % LV_DRAW_BUF_ALIGN == 0
                          && src_stride == lv_draw_buf_width_to_stride(w, streamer->color_format);
 
