@@ -52,7 +52,7 @@ static lv_result_t gstreamer_poll_bus(lv_gstreamer_t * streamer);
 static void gstreamer_update_frame(lv_gstreamer_t * streamer);
 static void gstreamer_release_frame(lv_gstreamer_t * streamer);
 static bool gstreamer_store_frame(lv_gstreamer_t * streamer, GstSample * sample, GstBuffer * buffer, GstMapInfo * map);
-static bool gstreamer_copy_to_aligned_frame(lv_gstreamer_t * streamer, const GstMapInfo * map, uint32_t w, uint32_t h,
+static bool gstreamer_copy_to_aligned_frame(lv_gstreamer_t * streamer, const uint8_t * src_data, uint32_t w, uint32_t h,
                                             uint32_t src_stride);
 static lv_result_t gstreamer_make_and_add_to_pipeline(lv_gstreamer_t * streamer,
                                                       const lv_gstreamer_pipeline_element_t * elements, size_t element_count);
@@ -533,20 +533,20 @@ static bool gstreamer_store_frame(lv_gstreamer_t * streamer, GstSample * sample,
 {
     const uint32_t w = GST_VIDEO_INFO_WIDTH(&streamer->video_info);
     const uint32_t h = GST_VIDEO_INFO_HEIGHT(&streamer->video_info);
-    const uint32_t src_stride = GST_VIDEO_INFO_PLANE_STRIDE(&streamer->video_info, 0);
 
-    /* TODO: temporary diagnostic to confirm i.MX G2D stride padding as the cause of the
-     * pixel-row shearing. If the buffer's GstVideoMeta stride is larger than the caps stride
-     * used above, the real fix is to honor the meta stride/offset here. Remove once confirmed.*/
-    GstVideoMeta * vmeta = gst_buffer_get_video_meta(buffer);
-    LV_LOG_USER("gstreamer stride: caps=%" LV_PRIu32 " meta=%d lvgl=%" LV_PRIu32 " w=%" LV_PRIu32 " h=%" LV_PRIu32 " off=%d",
-                src_stride,
-                vmeta ? (int)vmeta->stride[0] : -1,
-                (uint32_t)lv_draw_buf_width_to_stride(w, streamer->color_format),
-                w, h,
-                vmeta ? (int)vmeta->offset[0] : -1);
+    /* Hardware converters like imxvideoconvert_g2d pad the row stride for alignment (e.g. a
+     * 472px BGRA frame is stored with a 1920-byte stride instead of 1888) and advertise the
+     * real layout through a GstVideoMeta attached to the buffer. The caps-derived stride does
+     * not include that padding, so we must honor the meta when present; otherwise each row is
+     * read with the wrong pitch and the image shears diagonally. Fall back to the caps stride
+     * (and no plane offset) when no meta is attached, e.g. with software videoconvert.*/
+    const GstVideoMeta * vmeta = gst_buffer_get_video_meta(buffer);
+    const uint32_t src_stride = vmeta ? (uint32_t)vmeta->stride[0]
+                                : GST_VIDEO_INFO_PLANE_STRIDE(&streamer->video_info, 0);
+    const size_t src_offset = vmeta ? vmeta->offset[0] : 0;
+    uint8_t * const src_data = map->data + src_offset;
 
-    const bool aligned = (lv_uintptr_t)map->data % LV_DRAW_BUF_ALIGN == 0
+    const bool aligned = (lv_uintptr_t)src_data % LV_DRAW_BUF_ALIGN == 0
                          && src_stride == lv_draw_buf_width_to_stride(w, streamer->color_format);
 
     gstreamer_release_frame(streamer);
@@ -557,7 +557,7 @@ static bool gstreamer_store_frame(lv_gstreamer_t * streamer, GstSample * sample,
         streamer->last_sample = sample;
     }
     else {
-        const bool copied = gstreamer_copy_to_aligned_frame(streamer, map, w, h, src_stride);
+        const bool copied = gstreamer_copy_to_aligned_frame(streamer, src_data, w, h, src_stride);
         gst_buffer_unmap(buffer, map);
         gst_sample_unref(sample);
         if(!copied) {
@@ -567,8 +567,8 @@ static bool gstreamer_store_frame(lv_gstreamer_t * streamer, GstSample * sample,
 
     const lv_draw_buf_t * copy = streamer->aligned_frame;
     streamer->frame = (lv_image_dsc_t) {
-        .data = aligned ? map->data : copy->data,
-        .data_size = aligned ? map->size : copy->data_size,
+        .data = aligned ? src_data : copy->data,
+        .data_size = aligned ? map->size - src_offset : copy->data_size,
         .header = {
             .magic = LV_IMAGE_HEADER_MAGIC,
             .cf = streamer->color_format,
@@ -581,7 +581,7 @@ static bool gstreamer_store_frame(lv_gstreamer_t * streamer, GstSample * sample,
     return true;
 }
 
-static bool gstreamer_copy_to_aligned_frame(lv_gstreamer_t * streamer, const GstMapInfo * map, uint32_t w, uint32_t h,
+static bool gstreamer_copy_to_aligned_frame(lv_gstreamer_t * streamer, const uint8_t * src_data, uint32_t w, uint32_t h,
                                             uint32_t src_stride)
 {
     lv_draw_buf_t * dest = streamer->aligned_frame;
@@ -603,7 +603,7 @@ static bool gstreamer_copy_to_aligned_frame(lv_gstreamer_t * streamer, const Gst
     const uint32_t dest_stride = dest->header.stride;
     const uint32_t row_size = LV_MIN(src_stride, dest_stride);
     for(uint32_t y = 0; y < h; y++) {
-        lv_memcpy(dest->data + y * dest_stride, map->data + y * src_stride, row_size);
+        lv_memcpy(dest->data + y * dest_stride, src_data + y * src_stride, row_size);
     }
 
     lv_draw_buf_flush_cache(dest, NULL);
