@@ -828,7 +828,7 @@ static void on_decode_pad_added(GstElement * element, GstPad * pad, gpointer use
             }
 
             GstCaps * appsink_caps = gst_caps_from_string(caps_str);
-            g_object_set(G_OBJECT(video_app_sink), "emit-signals", TRUE, "sync", TRUE, "max-buffers", 1, "drop", TRUE, "caps",
+            g_object_set(G_OBJECT(video_app_sink), "emit-signals", TRUE, "sync", FALSE, "max-buffers", 1, "drop", TRUE, "caps",
                          appsink_caps, NULL);
             gst_caps_unref(appsink_caps);
 
