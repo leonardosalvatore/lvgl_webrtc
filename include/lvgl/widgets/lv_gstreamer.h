@@ -131,6 +131,15 @@ void lv_gstreamer_pause(lv_obj_t * obj);
 void lv_gstreamer_stop(lv_obj_t * obj);
 
 /**
+ * Dump the pipeline of this gstreamer as a Graphviz dot file.
+ * The file is written to the directory pointed to by the `GST_DEBUG_DUMP_DOT_DIR`
+ * environment variable. If the variable is not set, this function does nothing.
+ * @param obj           pointer to a gstreamer object
+ * @param file_name     base name (without extension) of the dot file to create
+ */
+void lv_gstreamer_dump(lv_obj_t * obj, const char * file_name);
+
+/**
  * Seek a position in this gstreamer
  * @param obj           pointer to a gstreamer object
  * @param position      position to seek to

@@ -6,6 +6,9 @@
 
 #if LV_USE_GSTREAMER
 
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 /* Generated with:
@@ -24,6 +27,28 @@
 
 static uint32_t event_cnt[LV_GSTREAMER_STREAM_STATE_END + 1];
 static lv_color_format_t original_color_format;
+static char dump_dot_dir[PATH_MAX];
+
+static void dump_dot_dir_cleanup(void)
+{
+    rmdir(dump_dot_dir);
+}
+
+/* GStreamer only reads GST_DEBUG_DUMP_DOT_DIR once, the first time gst_init()
+ * runs (triggered by the first lv_gstreamer_create() call), so the variable
+ * has to be in place before that, i.e. before main()/any test even starts.
+ * A constructor is the only reliable hook for that. */
+__attribute__((constructor))
+static void dump_dot_dir_init(void)
+{
+    lv_snprintf(dump_dot_dir, sizeof(dump_dot_dir), "/tmp/lv_gstreamer_dump_XXXXXX");
+    if(mkdtemp(dump_dot_dir) == NULL) {
+        fprintf(stderr, "Could not create a temporary GST_DEBUG_DUMP_DOT_DIR directory\n");
+        exit(1);
+    }
+    setenv("GST_DEBUG_DUMP_DOT_DIR", dump_dot_dir, 1);
+    atexit(dump_dot_dir_cleanup);
+}
 
 void setUp(void)
 {
@@ -119,6 +144,7 @@ void test_gstreamer_without_source(void)
     lv_gstreamer_set_position(player, 100);
     lv_gstreamer_set_rate(player, 512);
     lv_gstreamer_set_volume(player, 50);
+    lv_gstreamer_dump(player, "test_gstreamer_dump_no_pipeline");
     pump(50);
 
     TEST_ASSERT_EQUAL(LV_GSTREAMER_STATE_NULL, lv_gstreamer_get_state(player));
@@ -271,6 +297,38 @@ void test_gstreamer_delete_while_playing(void)
     TEST_ASSERT_MEM_LEAK_LESS_THAN(mem_before, 64);
 }
 
+void test_gstreamer_dump(void)
+{
+    lv_obj_t * player = create_player();
+    TEST_ASSERT_EQUAL(LV_RESULT_OK, lv_gstreamer_set_src(player, LV_GSTREAMER_FACTORY_TEST_VIDEO, NULL, NULL));
+
+    lv_gstreamer_play(player);
+    TEST_ASSERT_TRUE(pump_until(&event_cnt[LV_GSTREAMER_STREAM_STATE_START], 1, 3000));
+
+    char dot_path[PATH_MAX];
+    lv_snprintf(dot_path, sizeof(dot_path), "%s/test_gstreamer_dump.dot", dump_dot_dir);
+    unlink(dot_path);
+
+    /* GST_DEBUG_DUMP_DOT_DIR is set (by the constructor above) to dump_dot_dir,
+     * so the pipeline graph is written there */
+    lv_gstreamer_dump(player, "test_gstreamer_dump");
+    TEST_ASSERT_EQUAL(0, access(dot_path, F_OK));
+    unlink(dot_path);
+
+    /* Without GST_DEBUG_DUMP_DOT_DIR, nothing is dumped anywhere. GStreamer only
+     * reads the variable once, at gst_init() time, so lv_gstreamer_dump() has to
+     * check it itself rather than relying on GStreamer to no-op */
+    unsetenv("GST_DEBUG_DUMP_DOT_DIR");
+    lv_gstreamer_dump(player, "test_gstreamer_dump_no_env");
+    char no_env_dot_path[PATH_MAX];
+    lv_snprintf(no_env_dot_path, sizeof(no_env_dot_path), "%s/test_gstreamer_dump_no_env.dot", dump_dot_dir);
+    TEST_ASSERT_NOT_EQUAL(0, access(no_env_dot_path, F_OK));
+    TEST_ASSERT_NOT_EQUAL(0, access("test_gstreamer_dump_no_env.dot", F_OK));
+
+    /* Restore it for any test that may run after this one */
+    setenv("GST_DEBUG_DUMP_DOT_DIR", dump_dot_dir, 1);
+}
+
 #else
 
 void setUp(void) { }
@@ -283,6 +341,7 @@ void test_gstreamer_file_playback(void) { }
 void test_gstreamer_follows_display_color_format(void) { }
 void test_gstreamer_queue_stays_bounded(void) { }
 void test_gstreamer_delete_while_playing(void) { }
+void test_gstreamer_dump(void) { }
 
 #endif /* LV_USE_GSTREAMER */
 #endif /* LV_BUILD_TEST */

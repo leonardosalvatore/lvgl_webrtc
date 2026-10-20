@@ -258,6 +258,26 @@ void lv_gstreamer_stop(lv_obj_t * obj)
     }
     gstreamer_send_state_changed(streamer, LV_GSTREAMER_STREAM_STATE_STOP);
 }
+
+void lv_gstreamer_dump(lv_obj_t * obj, const char * file_name)
+{
+    LV_CHECK_OBJ(obj, MY_CLASS, return);
+    LV_CHECK_ARG(file_name != NULL, return);
+
+    lv_gstreamer_t * streamer = (lv_gstreamer_t *)obj;
+    if(!streamer->pipeline) {
+        LV_LOG_WARN("Cannot dump: GStreamer pipeline not initialized");
+        return;
+    }
+
+    if(!g_getenv("GST_DEBUG_DUMP_DOT_DIR")) {
+        LV_LOG_WARN("GST_DEBUG_DUMP_DOT_DIR is not set, the pipeline graph will not be dumped");
+        return;
+    }
+
+    GST_DEBUG_BIN_TO_DOT_FILE(GST_BIN(streamer->pipeline), GST_DEBUG_GRAPH_SHOW_ALL, file_name);
+}
+
 void lv_gstreamer_set_position(lv_obj_t * obj, uint32_t position)
 {
     LV_CHECK_OBJ(obj, MY_CLASS, return);
