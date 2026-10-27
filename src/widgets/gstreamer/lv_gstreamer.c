@@ -58,6 +58,7 @@ static lv_result_t gstreamer_make_and_add_to_pipeline(lv_gstreamer_t * streamer,
                                                       const lv_gstreamer_pipeline_element_t * elements, size_t element_count);
 static lv_result_t gstreamer_send_state_changed(lv_gstreamer_t * streamer, lv_gstreamer_stream_state_t state);
 static bool gstreamer_element_has_property(GstElement * element, const char * property_name);
+static bool gstreamer_set_string_array_property(GstElement * element, const char * property_name, const char * value);
 static const char * gstreamer_get_gst_format(lv_color_format_t color_format);
 static lv_color_format_t gstreamer_resolve_color_format(lv_obj_t * obj);
 static bool gstreamer_set_child_proxy_string(GstElement * element, const char * property_name, const char * value);
@@ -164,6 +165,18 @@ lv_result_t lv_gstreamer_set_src(lv_obj_t * obj, const char * factory_name, cons
             }
             else {
                 LV_LOG_WARN("webrtcsrc property 'connect-to-first-producer' is not available in this plugin build");
+            }
+            /* turn-servers is a GstValueArray of strings and can only be set in NULL or READY.
+             * The element is still in NULL here, before the pipeline is started. */
+            if(gstreamer_element_has_property(head, "turn-servers")) {
+                if(!gstreamer_set_string_array_property(head, "turn-servers", "stun://localhost")) {
+                    gst_object_unref(pipeline);
+                    LV_LOG_ERROR("Failed to set webrtcsrc property 'turn-servers'");
+                    return LV_RESULT_INVALID;
+                }
+            }
+            else {
+                LV_LOG_WARN("webrtcsrc property 'turn-servers' is not available in this plugin build");
             }
         }
         else {
@@ -738,6 +751,33 @@ static bool gstreamer_element_has_property(GstElement * element, const char * pr
 
     GObjectClass * klass = G_OBJECT_GET_CLASS(element);
     return g_object_class_find_property(klass, property_name) != NULL;
+}
+
+static bool gstreamer_set_string_array_property(GstElement * element, const char * property_name, const char * value)
+{
+    LV_ASSERT(element != NULL);
+    LV_ASSERT(property_name != NULL);
+    LV_ASSERT(value != NULL);
+
+    GObjectClass * klass = G_OBJECT_GET_CLASS(element);
+    GParamSpec * pspec = g_object_class_find_property(klass, property_name);
+    if(!pspec || pspec->value_type != GST_TYPE_ARRAY) {
+        LV_LOG_WARN("Property '%s' is not a GstValueArray", property_name);
+        return false;
+    }
+
+    GValue array = G_VALUE_INIT;
+    GValue item = G_VALUE_INIT;
+
+    g_value_init(&array, GST_TYPE_ARRAY);
+    g_value_init(&item, G_TYPE_STRING);
+    g_value_set_string(&item, value);
+    gst_value_array_append_value(&array, &item);
+    g_value_unset(&item);
+
+    g_object_set_property(G_OBJECT(element), property_name, &array);
+    g_value_unset(&array);
+    return true;
 }
 
 static bool gstreamer_set_child_proxy_string(GstElement * element, const char * property_name, const char * value)
